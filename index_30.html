@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>한림맵</title>
+  <meta name="description" content="한림대 주변 추천 식당, 무한리필, 6,000원 이하 식당을 지도에서 한눈에">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="한림맵">
+  <meta property="og:description" content="한림대 주변 추천 식당, 무한리필, 6,000원 이하 식당을 지도에서 한눈에">
+  <meta property="og:url" content="https://hallmap.github.io/">
+  <meta property="og:locale" content="ko_KR">
+  <style>
+    html, body { margin: 0; height: 100%; font-family: sans-serif; }
+    #map { width: 100%; height: 100%; }
+
+    #panel {
+      position: absolute; top: 12px; left: 12px; z-index: 100;
+      width: 340px; max-width: calc(100% - 24px); box-sizing: border-box;
+      background: #fff; border-radius: 10px; padding: 10px 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+    #search {
+      width: 100%; box-sizing: border-box; padding: 8px 10px;
+      border: 1px solid #ccc; border-radius: 8px; font-size: 14px;
+    }
+    #search:focus { outline: none; border-color: #03c75a; }
+
+    .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .row:empty { display: none; }
+    .btn {
+      border: 1px solid #ccc; background: #fff; border-radius: 16px;
+      padding: 5px 11px; font-size: 13px; cursor: pointer;
+    }
+    .btn.more { border-style: dashed; color: #666; }
+    .btn.lr.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .btn.l0.active { background: #03c75a; border-color: #03c75a; color: #fff; }
+    .btn.l1.active { background: #333;    border-color: #333;    color: #fff; }
+    .btn.l2.active { background: #777;    border-color: #777;    color: #fff; }
+
+    #filterNote { margin-top: 6px; font-size: 11px; color: #999; white-space: pre-line; }
+    #filterNote:empty { display: none; }
+
+    #countBar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+    #count { font-size: 12px; color: #666; }
+    #toggle { border: none; background: none; color: #03c75a; font-size: 12px; cursor: pointer; padding: 0; white-space: nowrap; margin-left: 8px; }
+    #panel.collapsed #list { display: none; }
+
+    #list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 40vh; overflow-y: auto; }
+    #list:empty { display: none; }
+    #list li { padding: 8px 4px; border-top: 1px solid #eee; cursor: pointer; font-size: 13px; }
+    #list li:hover { background: #f5f5f5; }
+    #list .name { font-weight: bold; }
+    #list .tel { color: #888; font-size: 12px; margin-top: 2px; }
+    #list .meta { color: #888; font-size: 12px; margin-top: 2px; }
+    #list .nopos { color: #d33; }
+    #list .off { color: #e03131; font-size: 12px; font-weight: normal; margin-left: 6px; }
+    #list .rec { color: #03c75a; font-size: 12px; margin-top: 3px; }
+
+    #noticeLine { margin-top: 8px; font-size: 12px; color: #666; white-space: pre-line; }
+    #noticeLine:empty { display: none; }
+
+    @media (max-width: 600px) {
+      #panel {
+        top: 8px; left: 8px; width: calc(100% - 16px); max-width: none;
+        padding: 8px 10px;
+      }
+      #search { padding: 6px 8px; font-size: 16px; }
+      .row {
+        flex-wrap: nowrap; overflow-x: auto; gap: 5px; margin-top: 6px;
+        scrollbar-width: none; -webkit-overflow-scrolling: touch;
+      }
+      .row::-webkit-scrollbar { display: none; }
+      .btn { flex: 0 0 auto; white-space: nowrap; padding: 4px 10px; font-size: 12px; }
+      #noticeLine, #filterNote { margin-top: 5px; font-size: 11px; }
+      #countBar { margin-top: 6px; }
+      #list { max-height: 22vh; margin-top: 6px; }
+      #list li { padding: 6px 2px; font-size: 12px; }
+      #list .tel, #list .meta, #list .off, #list .rec { font-size: 11px; }
+    }
+  </style>
+  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=lcz1qx02dx&submodules=geocoder"></script>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="panel">
+    <input id="search" type="search" placeholder="가게 이름, 주소, 메뉴 검색">
+    <div class="row" id="rowRegion"></div>
+    <div id="noticeLine"></div>
+    <div class="row" id="row0"></div>
+    <div class="row" id="row1"></div>
+    <div class="row" id="row2"></div>
+    <div id="filterNote"></div>
+    <div id="countBar">
+      <span id="count">위치 불러오는 중…</span>
+      <button id="toggle">목록 접기 ▲</button>
+    </div>
+    <ul id="list"></ul>
+  </div>
+
+  <script>
+    var REGIONS = {
+      '춘천':   { prefix: '강원특별자치도 춘천시 ', label: '춘천시 ', center: [37.8866, 127.7385], zoom: 14 },
+      '수도권': { prefix: '', label: '', center: [37.5666, 126.9784], zoom: 10 },
+      '충청권': { prefix: '', label: '', center: [36.5184, 127.2600], zoom: 9 },
+      '경상권': { prefix: '', label: '', center: [35.7000, 128.6000], zoom: 8 },
+      '강원권': { prefix: '', label: '', center: [37.7500, 128.3000], zoom: 8 },
+      '전라권': { prefix: '', label: '', center: [35.4000, 127.0000], zoom: 8 }
+    };
+
+    var CATEGORIES = {
+      '춘천': {
+        '⭐추천 식당': {},
+        '신규 오픈': {},
+        '무한리필': {
+          '해산물': [],
+          '육류': ['돼지고기', '소고기', '샤브샤브', '양꼬치·훠궈']
+        },
+        '6,000원 이하': {},
+        '뷔페': {
+          '한식뷔페': [],
+          '중식뷔페': [],
+          '기타': []
+        }
+      },
+      '수도권': {},
+      '충청권': {},
+      '경상권': {},
+      '강원권': {},
+      '전라권': {}
+    };
+
+    var HIDDEN_MAINS = ['⭐추천 식당'];
+
+    var FILTER_NOTES = {
+      '춘천/뷔페/한식뷔페': '학교 주변 음식점만 표시',
+      '춘천/신규 오픈': '신규 오픈한 학교 주변 식당\n6월~9월에 오픈한 학교 근처 식당'
+    };
+
+    var PLACES = [
+      { name: '우리송어양식장횟집',   addr: '우묵길60번길 26',     main: ['무한리필', '⭐추천 식당'], cats: ['해산물'], tel: '033-242-1143' },
+      { name: '송암골평창송어 춘천점', addr: '공지로 345',           main: '무한리필', cats: ['해산물'], off: '매월 둘째, 넷째 화요일 휴무', tel: '0507-1483-0473' },
+      { name: '장어왔소',             addr: '동면 만천로 82',       main: '무한리필', cats: ['해산물'], off: '매주 수요일 휴무', tel: '0507-1478-9235' },
+      { name: '춘천조개창고',         addr: '동면 금촌로 388',      main: '무한리필', cats: ['해산물'], off: '매주 목요일 휴무' },
+      { name: '명현만간장게장 춘천점', addr: '춘천로 180',           main: '무한리필', cats: ['해산물'], off: '매주 화요일 휴무', tel: '0507-1302-3837' },
+
+      { name: '화로상회',             addr: '우묵길52번길 10',     main: '무한리필', cats: ['육류/돼지고기'], tel: '033-255-2292' },
+      { name: '한별관',               addr: '우묵길78번길 26',     main: '무한리필', cats: ['육류/돼지고기'], off: '매주 일요일 휴무', tel: '0507-1465-7844' },
+      { name: '청춘화로',             addr: '스무숲4길 9',          main: '무한리필', cats: ['육류/돼지고기'], off: '매주 화요일 휴무', tel: '033-264-8525' },
+      { name: '929어소오소 강대점',    addr: '백령로 142',           main: '무한리필', cats: ['육류/돼지고기'], off: '매월 셋째 월요일 휴무', tel: '033-251-8426' },
+      { name: '고기싸롱',             addr: '춘천로 324',           main: '무한리필', cats: ['육류/돼지고기'], off: '매월 둘째 월요일 휴무', tel: '033-255-0111' },
+      { name: '꿀돼지',               addr: '삭주로80번길 6',       main: '무한리필', cats: ['육류/돼지고기'], tel: '033-252-3666' },
+      { name: '육당',                 addr: '백령로 148-1',         main: '무한리필', cats: ['육류/돼지고기'], off: '매주 토요일 휴무', tel: '0507-1340-0558' },
+      { name: '엉터리무한대패',        addr: '백령로 144',           main: '무한리필', cats: ['육류/돼지고기'], tel: '0507-1388-5994' },
+      { name: '명륜진사갈비 춘천소양로점', main: '무한리필', cats: ['육류/돼지고기'], tel: '033-242-6877', lat: 37.884375, lng: 127.723836 },
+      { name: '명륜진사갈비 춘천우두점', main: '무한리필', cats: ['육류/돼지고기'], tel: '0507-1479-0681', lat: 37.90635, lng: 127.732575 },
+      { name: '명륜진사갈비 춘천후평점', main: '무한리필', cats: ['육류/돼지고기'], tel: '033-242-9259', lat: 37.871886, lng: 127.752947 },
+      { name: '명륜진사갈비 춘천거두사거리점', main: '무한리필', cats: ['육류/돼지고기'], tel: '0507-1427-3343', lat: 37.855894, lng: 127.750661 },
+      { name: '명륜진사갈비 춘천퇴계점', main: '무한리필', cats: ['육류/돼지고기'], tel: '033-241-5500', lat: 37.853239, lng: 127.728992 },
+      { name: '대판', main: '무한리필', cats: ['육류/돼지고기'], tel: '033-252-6133', off: '매주 화요일 휴무', lat: 37.90965, lng: 127.722544 },
+      { name: '춘천꽃대패',           addr: '우묵들길 28',        main: '무한리필', cats: ['해산물', '육류/돼지고기', '육류/소고기'], note: '돼지, 소, 생연어', off: '매주 화요일 휴무', tel: '0507-1328-3439' },
+
+      { name: '육회왕자연어공주',      addr: '애막골길7번길 28',     main: '무한리필', cats: ['육류/소고기'], note: '육회, 참치', tel: '0507-1428-3125' },
+
+      { name: '편편집 춘천삼천점',     addr: '스포츠타운길 432',     main: '무한리필', cats: ['육류/샤브샤브'], tel: '0507-1383-3889' },
+      { name: '일공공샤브 춘천점',     addr: '후석로 120',           main: '무한리필', cats: ['육류/샤브샤브'], tel: '033-262-3278' },
+      { name: '샤브르정원 춘천점',     addr: '보안길 58',            main: '무한리필', cats: ['육류/샤브샤브'], tel: '0507-1478-4445' },
+      { name: '샤브올데이 춘천점',     addr: '춘천로 12',            main: '무한리필', cats: ['육류/샤브샤브'], tel: '033-242-1112' },
+      { name: '편편집 춘천퇴계점', main: '무한리필', cats: ['육류/샤브샤브'], tel: '0507-1316-9639', lat: 37.853228, lng: 127.729117 },
+
+      { name: '초원가 후평점',         addr: '보안길 71',            main: '무한리필', cats: ['육류/양꼬치·훠궈'], tel: '0507-1407-8901' },
+      { name: '재왕무한리필양꼬치훠궈', addr: '후석로186번길 10-1',   main: '무한리필', cats: ['육류/양꼬치·훠궈'], tel: '033-262-3338' },
+      { name: '초원가 남춘천역점', main: '무한리필', cats: ['육류/양꼬치·훠궈'], tel: '0507-1362-8913', lat: 37.865806, lng: 127.726417 },
+      { name: '초원가 거두리점', main: '무한리필', cats: ['육류/양꼬치·훠궈'], tel: '0507-1331-9056', lat: 37.854447, lng: 127.755525 },
+      { name: '춘천 일품양 무한리필',   addr: '스무숲1길 4-8',        main: '무한리필', cats: ['육류/양꼬치·훠궈'], note: '양꼬치', off: '매주 월요일 휴무', tel: '0507-1348-3350' },
+      { name: '춘천일품양숯불양갈비양꼬치무한리필', addr: '영서로 2763', main: '무한리필', cats: ['육류/양꼬치·훠궈'], note: '양꼬치', off: '매주 일요일 휴무', tel: '033-257-3946' },
+
+      { name: '크루아 라다',           addr: '서부대성로44번길 25',  main: '무한리필', cats: ['육류/돼지고기'], note: '무까타', off: '매주 일요일 휴무' },
+
+      { name: '하마집',               addr: '후석로369번길 2',      main: '6,000원 이하', cats: [], off: '매주 일요일 휴무', tel: '033-257-4233' },
+      { name: '쥐눈이콩나물밥 1호점',  addr: '중앙로 33',            main: '6,000원 이하', cats: [], detail: '지하상가', off: '매월 둘째, 넷째 화요일 휴무', tel: '033-242-9777' },
+      { name: '신촌돈까스',           addr: '서부대성로227번길 24', main: '6,000원 이하', cats: [], detail: '1층', tel: '033-255-6711' },
+      { name: '봉실스넥',             addr: '서부대성로239번길 8',  main: '6,000원 이하', cats: [], tel: '033-251-6890' },
+      { name: '광치해장국',           addr: '소양로 108',           main: '6,000원 이하', cats: [], tel: '033-253-1100' },
+      { name: '오믈하우스',           addr: '서부대성로227번길 24', main: '6,000원 이하', cats: [], detail: '2층', off: '매주 일요일 휴무', tel: '0507-1363-1331' },
+
+      { name: '브릭스피자',           addr: '서부대성로 255',       main: '⭐추천 식당', cats: [], rec: '고구마크림치즈피자', off: '매주 월요일 휴무', tel: '0507-1318-7349' },
+      { name: '찹쌀미친꽈배기',        addr: '충열로 32',            main: '⭐추천 식당', cats: [], lat: 37.899028, lng: 127.731583 },
+      { name: '혜정닭갈비',           addr: '금강로62번길 11-1',    main: '⭐추천 식당', cats: [], off: '매월 첫째 수요일 휴무', tel: '033-256-5910' },
+      { name: '필감자탕',             addr: '서부대성로46번길 2',   main: '⭐추천 식당', cats: [], rec: '비지뼈해장국', off: '매주 일요일 휴무', lat: 37.88305, lng: 127.728061 },
+      { name: '베트남쌀국수',          addr: '명동길 47',            main: '⭐추천 식당', cats: [], detail: '2층', off: '매월 둘째, 넷째 화요일 휴무', lat: 37.877006, lng: 127.724431 },
+      { name: '심야화로 퇴계점',       addr: '퇴계로 97',            main: '⭐추천 식당', cats: [], lat: 37.862094, lng: 127.731128 },
+
+      { name: '메가혼밥 강원춘천점', main: '신규 오픈', cats: [], tel: '033-910-8952', lat: 37.883133, lng: 127.73945 },
+      { name: '북촌손만두 춘천한림대점', main: '신규 오픈', cats: [], tel: '0507-1460-1013', off: '매주 화요일 휴무', lat: 37.883636, lng: 127.741992 },
+      { name: '백반하우스', main: '신규 오픈', cats: [], tel: '033-252-4606', lat: 37.884825, lng: 127.744606 },
+      { name: '고향산천순대국&뼈해장국', main: '신규 오픈', cats: [], tel: '033-244-3555', off: '매주 일요일 휴무', lat: 37.884319, lng: 127.743722 },
+
+      { name: '다이닝원 춘천점',       addr: '공지로 345',           main: '뷔페', cats: ['기타'], detail: '2층', tel: '0507-1446-3402' },
+      { name: '쿠우쿠우 춘천점',       addr: '지석로 80',            main: '뷔페', cats: ['기타'], detail: '지하1층', tel: '033-269-7004' },
+      { name: '애슐리퀸즈 춘천점',     addr: '금강로 68-9',          main: '뷔페', cats: ['기타'], detail: '지하1층', tel: '0507-1315-5372' },
+      { name: '두끼 춘천명동점',       addr: '중앙로67번길 3',       main: '뷔페', cats: ['한식뷔페'], tel: '033-257-3320' },
+      { name: '팔호광장자율식당',      addr: '춘천로 173-1',         main: '뷔페', cats: ['한식뷔페'], tel: '033-256-2220' },
+      { name: '밥짓는마을',           addr: '중앙로 63-1',          main: '뷔페', cats: ['한식뷔페'], tel: '033-242-2624', off: '매주 일요일 휴무' },
+      { name: '호반중식부페',          addr: '공지로 603-8',         main: '뷔페', cats: ['중식뷔페'], tel: '033-244-8311', off: '매주 월요일 휴무' },
+
+      { name: '토속된장찌개',          addr: '충북 청주시 흥덕구 오송읍 만수길 22', region: '충청권', tel: '043-233-6638', off: '매주 일요일 휴무', lat: 36.623983, lng: 127.327492 },
+      { name: '너드버거클럽',          addr: '세종 가름로 232',      region: '충청권', tel: '0507-1329-1210', lat: 36.495344, lng: 127.265075 },
+      { name: '소소한숯불갈비 충주본점', addr: '충주시 연수동산로1길 51', region: '충청권', lat: 36.986619, lng: 127.945364 },
+
+      { name: '소선정',               addr: '경북 상주시 개운2길 19-1', region: '경상권', tel: '0507-1366-6930', lat: 36.403392, lng: 128.146222 },
+      { name: '버드나무집', addr: '부산 부산진구 동천로108번길 11', region: '경상권', tel: '070-7778-6390', lat: 35.158511, lng: 129.063178 },
+      { name: '톤쇼우', addr: '부산 금정구 금강로 247-10', region: '경상권', lat: 35.230406, lng: 129.084267 },
+
+      { name: '정동 광주수완본점', addr: '전남광주 광산구 수완로74번길 11-68', region: '전라권', tel: '0507-1381-3507', lat: 35.193594, lng: 126.8308 },
+
+      { name: 'bd버거 성수역연무장길 점심저녁', addr: '서울 성동구 성수이로14길 7', region: '수도권', tel: '0507-1444-9199', lat: 37.541103, lng: 127.056456 }
+    ];
+
+    var region = Object.keys(REGIONS)[0];
+
+    var map = new naver.maps.Map('map', {
+      center: new naver.maps.LatLng(REGIONS[region].center[0], REGIONS[region].center[1]),
+      zoom: REGIONS[region].zoom,
+      zoomControl: true,
+      zoomControlOptions: { position: naver.maps.Position.RIGHT_CENTER }
+    });
+    var infoWindow = new naver.maps.InfoWindow({ content: '' });
+
+    naver.maps.Event.addListener(map, 'click', function () {
+      infoWindow.close();
+      if (listPin) {
+        listPin.setMap(null);
+        listPin = null;
+      }
+    });
+
+    function regionOf(p) {
+      return p.region || Object.keys(REGIONS)[0];
+    }
+
+    function mains(p) {
+      if (!p.main) return [];
+      return Array.isArray(p.main) ? p.main : [p.main];
+    }
+
+    function catLabel(p) {
+      var m = mains(p).join(', ');
+      if (!p.cats || !p.cats.length) return m;
+      return m + ' · ' + p.cats.map(function (c) { return c.replace('/', ' > '); }).join(', ');
+    }
+
+    function fullAddr(p) {
+      return [p.addr, p.detail].filter(Boolean).join(' ');
+    }
+
+    function openInfo(p) {
+      var link = 'https://map.naver.com/p/search/' + encodeURIComponent(regionOf(p) + ' ' + p.name);
+      infoWindow.setContent(
+        '<div style="padding:10px 12px;font-size:13px;line-height:1.5;max-width:240px;">' +
+          '<b>' + p.name + '</b><br>' +
+          (catLabel(p) ? '<span style="color:#888">' + catLabel(p) + '</span><br>' : '') +
+          (p.note ? p.note + '<br>' : '') +
+          (fullAddr(p) ? REGIONS[regionOf(p)].label + fullAddr(p) + '<br>' : '') +
+          '<a href="' + link + '" target="_blank">네이버 지도에서 보기</a>' +
+        '</div>'
+      );
+      infoWindow.open(map, p.marker);
+    }
+
+    function geocode(p) {
+      return new Promise(function (resolve) {
+        if (p.lat && p.lng) return resolve();
+        naver.maps.Service.geocode({ query: REGIONS[regionOf(p)].prefix + p.addr }, function (status, res) {
+          if (status === naver.maps.Service.Status.OK && res.v2.addresses.length) {
+            p.lat = parseFloat(res.v2.addresses[0].y);
+            p.lng = parseFloat(res.v2.addresses[0].x);
+          } else {
+            console.warn('주소 검색 실패', status, p.name, REGIONS[regionOf(p)].prefix + p.addr);
+          }
+          resolve();
+        });
+      });
+    }
+
+    var sel = ['전체', '전체', '전체'];
+    var query = '';
+
+    function matchCategory(p) {
+      if (regionOf(p) !== region) return false;
+      var m = mains(p);
+      if (sel[0] !== '전체' && m.indexOf(sel[0]) === -1) return false;
+      if (sel[0] === '전체' && !query && m.length &&
+          m.every(function (x) { return HIDDEN_MAINS.indexOf(x) !== -1; })) return false;
+      if (!p.cats || !p.cats.length) return sel[1] === '전체';
+      return p.cats.some(function (c) {
+        var parts = c.split('/');
+        if (sel[1] !== '전체' && parts[0] !== sel[1]) return false;
+        if (sel[2] !== '전체' && parts[1] !== sel[2]) return false;
+        return true;
+      });
+    }
+
+    function matchSearch(p) {
+      if (!query) return true;
+      var text = (p.name + ' ' + fullAddr(p) + ' ' + mains(p).join(' ') + ' ' + (p.note || '') + ' ' + (p.rec || '') + ' ' + (p.cats || []).join(' ')).toLowerCase();
+      return text.indexOf(query) !== -1;
+    }
+
+    function buttonRow(id, level, items) {
+      var row = document.getElementById(id);
+      row.innerHTML = '';
+      if (!items) return;
+      ['전체'].concat(items).forEach(function (label) {
+        var b = document.createElement('button');
+        b.className = 'btn l' + level + (sel[level] === label ? ' active' : '');
+        b.textContent = label;
+        b.onclick = function () {
+          sel[level] = label;
+          for (var i = level + 1; i < sel.length; i++) sel[i] = '전체';
+          render();
+        };
+        row.appendChild(b);
+      });
+    }
+
+    var regionsOpen = false;
+
+    function regionRow() {
+      var row = document.getElementById('rowRegion');
+      row.innerHTML = '';
+      var all = Object.keys(REGIONS);
+      var visible = regionsOpen ? all : all.filter(function (r, i) { return i === 0 || r === region; });
+      visible.forEach(function (r) {
+        var b = document.createElement('button');
+        b.className = 'btn lr' + (r === region ? ' active' : '');
+        b.textContent = r;
+        b.onclick = function () {
+          if (r === region) return;
+          region = r;
+          sel = ['전체', '전체', '전체'];
+          var c = REGIONS[r].center;
+          map.setCenter(new naver.maps.LatLng(c[0], c[1]));
+          map.setZoom(REGIONS[r].zoom);
+          render();
+        };
+        row.appendChild(b);
+      });
+      if (all.length > 1) {
+        var t = document.createElement('button');
+        t.className = 'btn more';
+        t.textContent = regionsOpen ? '◀ 접기' : '다른 지역 ▶';
+        t.onclick = function () {
+          regionsOpen = !regionsOpen;
+          regionRow();
+        };
+        row.appendChild(t);
+      }
+    }
+
+    function render() {
+      regionRow();
+      document.getElementById('noticeLine').textContent =
+        NOTICE_HIDDEN_REGIONS.indexOf(region) === -1 ? noticeText : '';
+      var cats = CATEGORIES[region] || {};
+      buttonRow('row0', 0, Object.keys(cats));
+      var mids = sel[0] !== '전체' ? cats[sel[0]] : null;
+      buttonRow('row1', 1, mids && Object.keys(mids).length ? Object.keys(mids) : null);
+      var subs = mids && sel[1] !== '전체' ? mids[sel[1]] : null;
+      buttonRow('row2', 2, subs && subs.length ? subs : null);
+
+      var noteKey = [region].concat(sel.filter(function (x) { return x !== '전체'; })).join('/');
+      document.getElementById('filterNote').textContent = FILTER_NOTES[noteKey] || '';
+
+      infoWindow.close();
+      var list = document.getElementById('list');
+      list.innerHTML = '';
+      var shown = [];
+
+      var hidePins = PIN_HIDDEN_REGIONS.indexOf(region) !== -1 && sel[0] === '전체' && !query;
+      listPin = null;
+
+      PLACES.forEach(function (p) {
+        var ok = matchCategory(p) && matchSearch(p);
+        if (p.marker) p.marker.setMap(ok && !hidePins ? map : null);
+        if (ok) shown.push(p);
+      });
+
+      {
+        shown.forEach(function (p) {
+          var li = document.createElement('li');
+          li.innerHTML = '<div class="name">' + p.name +
+            (p.off ? '<span class="off">' + p.off + '</span>' : '') + '</div>' +
+            (p.tel ? '<div class="tel">' + p.tel + '</div>' : '') +
+            '<div class="meta">' + [catLabel(p), fullAddr(p)].filter(Boolean).join(' · ') +
+            (p.marker ? '' : ' <span class="nopos">(위치 못 찾음)</span>') + '</div>' +
+            (sel[0] === '⭐추천 식당' && p.rec ? '<div class="rec">추천 메뉴: ' + p.rec + '</div>' : '');
+          li.onclick = function () {
+            if (!p.marker) return;
+            if (hidePins) {
+              if (listPin) listPin.setMap(null);
+              p.marker.setMap(map);
+              listPin = p.marker;
+            }
+            map.setZoom(17);
+            map.panTo(p.marker.getPosition());
+            openInfo(p);
+            if (window.innerWidth < 600) {
+              document.getElementById('panel').classList.add('collapsed');
+              document.getElementById('toggle').textContent = '목록 펼치기 ▼';
+            }
+          };
+          list.appendChild(li);
+        });
+      }
+
+      var msg = hidePins
+        ? shown.length + '곳 · 카테고리를 고르면 지도에 핀이 표시돼요'
+        : shown.length + '곳 표시 중';
+      if (query && shown.length === 0) msg = '검색 결과가 없습니다';
+      document.getElementById('count').textContent = msg + failedMsg;
+    }
+
+    var failedMsg = '';
+    var noticeText = '';
+    var NOTICE_HIDDEN_REGIONS = ['춘천'];
+    var PIN_HIDDEN_REGIONS = ['춘천'];
+    var listPin = null;
+
+    document.getElementById('toggle').addEventListener('click', function () {
+      var panel = document.getElementById('panel');
+      panel.classList.toggle('collapsed');
+      this.textContent = panel.classList.contains('collapsed') ? '목록 펼치기 ▼' : '목록 접기 ▲';
+    });
+    document.getElementById('search').addEventListener('input', function (e) {
+      query = e.target.value.trim().toLowerCase();
+      render();
+    });
+
+    fetch('notice.txt?t=' + Date.now())
+      .then(function (res) { return res.ok ? res.text() : ''; })
+      .then(function (text) {
+        text = text.trim();
+        noticeText = text;
+        render();
+      })
+      .catch(function () {});
+
+    Promise.all(PLACES.map(geocode)).then(function () {
+      var failed = [];
+      var used = {};
+      PLACES.forEach(function (p) {
+        if (!p.lat) return;
+        var key = p.lat.toFixed(6) + ',' + p.lng.toFixed(6);
+        var n = used[key] || 0;
+        used[key] = n + 1;
+        p.lng += n * 0.00012;
+      });
+      PLACES.forEach(function (p) {
+        if (!p.lat) { failed.push(p.name); return; }
+        p.marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(p.lat, p.lng),
+          map: map,
+          title: p.name
+        });
+        naver.maps.Event.addListener(p.marker, 'click', function () { openInfo(p); });
+      });
+      if (failed.length) {
+        failedMsg = failed.length === PLACES.length
+          ? ' · 위치 못 찾음 (Geocoding 설정 확인)'
+          : ' · 위치 못 찾음 ' + failed.length + '곳';
+        console.warn('주소로 위치를 못 찾은 가게:', failed);
+      }
+      render();
+    });
+  </script>
+</body>
+</html>
